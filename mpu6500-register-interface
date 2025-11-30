@@ -1,0 +1,32 @@
+#include <Wire.h>
+
+#define ICM_ADDR   0x68
+#define WHO_AM_I   0x75
+#define PWR_MGMT_1 0x6B
+
+void setup() {
+  Serial.begin(9600);
+  Wire.begin();
+
+  Wire.beginTransmission(ICM_ADDR);
+  Wire.write(WHO_AM_I);  //we are just pointing at the internal register, basically giving the internal addr to the device [IMU] to help us; we do not talk to internal registers.. just giving maibox addresses to the device to give us data from that particular addr
+  Wire.endTransmission(false);  //false stop means "i'm done giving orders, but don't hang up yet"; (repeated start condition) basically it keeps the communication line open/reserved for the current master.
+  Wire.requestFrom(ICM_ADDR, 1, true);  //requestFrom(addr, quantity, stop); quantity = #BYTES; 1 byte can store a number between 0-255 and since the register output for WHO_AM_I falls in that range, we use 1 byte of data;
+
+  byte id = Wire.read(); 
+  Serial.print("ID: 0x");
+  Serial.println(id, HEX);
+
+  if (id == 0x70) {
+    Wire.beginTransmission(ICM_ADDR);
+    Wire.write(PWR_MGMT_1);  //power 1 = mcb for a house and contrls the on/off for the whole chip, whereas power 2 is like individual room switches that can turn on/off individual components on the chip (like accelerometer, gyro, etc)
+    Wire.write(0x00);  // Wake up
+    Wire.endTransmission();
+    Serial.println("IMU Awake.");
+  } else {
+    Serial.println("Connection Failed.");
+  }
+}
+
+void loop() {
+}
