@@ -19,17 +19,29 @@ This project emphasizes **embedded IMU communication, signal conditioning, and o
 ## System Architecture
 
 IMU (ICM / MPU series, I²C)
+
 ↓
+
 Raw Accelerometer & Gyroscope Data
+
 ↓
+
 Low-Pass Filtering on gyro for yaw(noise attenuation)
+
 ↓
+
 Calibration & Scaling
+
 ↓
+
 Complementary Filter (sensor fusion)
+
 ↓
+
 Orientation Computation (roll, pitch, yaw)
+
 ↓
+
 Rate-Limited Serial Telemetry (USB, 115200 baud)
 
 ---
