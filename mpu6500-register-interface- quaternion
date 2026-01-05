@@ -1,0 +1,155 @@
+#include <Wire.h>
+
+#define ICM_ADDR   0x69
+#define WHO_AM_I   0x75
+#define PWR_MGMT_1 0x6B
+#define ACCEL_CONFIG 0x1C 
+#define GYRO_CONFIG 0x1B 
+#define ACCEL_SENSITIVITY 4096.0f     // LSB/g for +/- 8g range
+#define GYRO_SENSITIVITY 16.4f        // LSB/(°/s) for +/- 2000 dps range
+#define DEG_TO_RAD (PI / 180.0f)
+
+
+uint8_t ACCEL_RANGE = 0x10;
+uint8_t GYRO_RANGE = 0x18;
+float g = 9.81; //gravitational constant
+unsigned long previous_time = 0; 
+float dt = 0.0; // Delta time in seconds
+
+int16_t accl_x, accl_y, accl_z; // variables for accelerometer raw data
+int16_t gyro_x, gyro_y, gyro_z; // variables for gyro raw data
+
+// Quaternion state
+float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;
+
+// Mahony proportional gain
+const float Kp = 2.0f;
+
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+//accelerometer config
+  Wire.beginTransmission(ICM_ADDR);
+  Wire.write(ACCEL_CONFIG);
+  Wire.write(ACCEL_RANGE); //range set to +/-8g
+  Wire.endTransmission();
+
+//gyro config
+  Wire.beginTransmission(ICM_ADDR);
+  Wire.write(GYRO_CONFIG);
+  Wire.write(GYRO_RANGE); //range set to +/- 2000°/s
+  Wire.endTransmission();
+
+  Wire.beginTransmission(ICM_ADDR);
+  Wire.write(WHO_AM_I); //we are just pointing at the internal register, basically giving the internal addr to the device [IMU] to help us; we do not talk to internal registers.. just giving maibox addresses to the device to give us data from that particular addr
+  Wire.endTransmission(false); //false stop means "i'm done giving orders, but don't hang up yet"; (repeated start condition) basically it keeps the communication line open/reserved for the current master.
+  Wire.requestFrom(ICM_ADDR, 1, true); //requestFrom(addr, quantity, stop); quantity = #BYTES; 1 byte can store a number between 0-255 and since the register output for WHO_AM_I falls in that range, we use 1 byte of data;
+  if (Wire.available() < 14) {
+    return;  // skip this loop iteration if faulty data
+  }
+
+  byte id = Wire.read(); 
+  Serial.print("ID: 0x");
+  Serial.println(id, HEX);
+
+  if (id == 0x70) {
+    Wire.beginTransmission(ICM_ADDR);
+    Wire.write(PWR_MGMT_1); //power 1 = mcb for a house and contrls the on/off for the whole chip, whereas power 2 is like individual room switches that can turn on/off individual components on the chip (like accelerometer, gyro, etc)
+    Wire.write(0x00); // Wake up
+    Wire.endTransmission();
+    Serial.println("IMU Awake.");
+  } else {
+    Serial.println("Connection Failed.");
+  }
+
+  previous_time = micros();
+}
+
+void loop() {
+Wire.beginTransmission(ICM_ADDR);
+Wire.write(0x3B); // ACCEL_XOUT_H {starting register}
+Wire.endTransmission(false); //restart condition so that the connection is alive
+Wire.requestFrom(ICM_ADDR, 7*2, true); //requesting 7*2 = 14 registers
+
+//"Wire.read()<<8 | Wire.read;" left bitwise operation, two registers are stored in the same variable
+accl_x = Wire.read()<<8 | Wire.read();   // reading registers: 0x3B (ACCEL_XOUT_H) and 0x3C (ACCEL_XOUT_L)
+accl_y = Wire.read()<<8 | Wire.read();   // reading registers: 0x3D (ACCEL_YOUT_H) and 0x3E (ACCEL_YOUT_L)
+accl_z = Wire.read()<<8 | Wire.read();   // reading registers: 0x3F (ACCEL_ZOUT_H) and 0x40 (ACCEL_ZOUT_L)
+gyro_x = Wire.read()<<8 | Wire.read();   // reading registers: 0x43 (GYRO_XOUT_H) and 0x44 (GYRO_XOUT_L)
+gyro_y = Wire.read()<<8 | Wire.read();   // reading registers: 0x45 (GYRO_YOUT_H) and 0x46 (GYRO_YOUT_L)
+gyro_z = Wire.read()<<8 | Wire.read();   // reading registers: 0x47 (GYRO_ZOUT_H) and 0x48 (GYRO_ZOUT_L)
+
+
+//calculating time elapsed, for gyro roll and pitch measurement
+unsigned long current_time = micros();
+dt = (float)(current_time - previous_time) / 1000000.0;
+previous_time = current_time;
+
+//converting raw accelerometer values to g values with caliberation 
+float accl_x_g = ((float)accl_x - 66.14)/ ACCEL_SENSITIVITY;
+float accl_y_g = ((float)accl_y + 109.14)/ ACCEL_SENSITIVITY;
+float accl_z_g = ((float)accl_z - 342.29)/ ACCEL_SENSITIVITY;
+
+//Convert raw gyro data to an actual rate in Degrees Per Second
+float gyro_x_rate = ((float)gyro_x - 8.36)/ GYRO_SENSITIVITY; 
+float gyro_y_rate = ((float)gyro_y - 88.36)/ GYRO_SENSITIVITY;
+float gyro_z_rate = ((float)gyro_z + 7.64)/ GYRO_SENSITIVITY;
+
+gyro_x_rate *= DEG_TO_RAD;
+gyro_y_rate *= DEG_TO_RAD;
+gyro_z_rate *= DEG_TO_RAD;
+
+float acc_norm = sqrt(accl_x_g*accl_x_g + accl_y_g*accl_y_g + accl_z_g*accl_z_g); //normalizing acclerometer
+if (acc_norm == 0) return;
+
+accl_x_g /= acc_norm;
+accl_y_g /= acc_norm;
+accl_z_g /= acc_norm;
+
+//Estimated gravity from quaternion
+float vx = 2.0f * (q1*q3 - q0*q2); 
+float vy = 2.0f * (q0*q1 + q2*q3);
+float vz = q0*q0 - q1*q1 - q2*q2 + q3*q3;
+
+//Error between measured & estimated gravity (* = cross product)
+float ex = (accl_y_g * vz - accl_z_g * vy);
+float ey = (accl_z_g * vx - accl_x_g * vz);
+float ez = (accl_x_g * vy - accl_y_g * vx);
+
+//Applying correction to gyro using accelerometer
+gyro_x_rate += Kp * ex;
+gyro_y_rate += Kp * ey;
+gyro_z_rate += Kp * ez;
+
+//Quaternion integration
+float dq0 = 0.5f * (-q1*gyro_x_rate - q2*gyro_y_rate - q3*gyro_z_rate);
+float dq1 = 0.5f * ( q0*gyro_x_rate + q2*gyro_z_rate - q3*gyro_y_rate);
+float dq2 = 0.5f * ( q0*gyro_y_rate - q1*gyro_z_rate + q3*gyro_x_rate);
+float dq3 = 0.5f * ( q0*gyro_z_rate + q1*gyro_y_rate - q2*gyro_x_rate);
+
+q0 += dq0 * dt;
+q1 += dq1 * dt;
+q2 += dq2 * dt;
+q3 += dq3 * dt;
+
+float q_norm = sqrt(q0*q0 + q1*q1 + q2*q2 + q3*q3);
+q0 /= q_norm;
+q1 /= q_norm;
+q2 /= q_norm;
+q3 /= q_norm;
+
+
+// Non-blocking rate limiter: ensures serial telemetry is transmitted
+// at a fixed frequency (50 Hz) by comparing elapsed time using millis()
+static unsigned long lastPrint = 0; //static variables are initialized once and remembered forever, even inside a function.
+if (millis() - lastPrint >= 20) {   // 50 Hz
+  lastPrint = millis();
+
+//print out roll, pitch, and yaw
+  Serial.print(q0); Serial.print(",");
+  Serial.print(q1); Serial.print(",");
+  Serial.print(q2);Serial.print(",");
+  Serial.println(q3);
+}
